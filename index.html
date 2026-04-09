@@ -696,7 +696,7 @@ window.om=(type,data)=>{
         <div class="prog"><div class="prog-f" style="width:${p.progress||0}%;background:${kk.color};"></div></div>
         <div style="font-size:10px;color:var(--text3);margin-bottom:10px;">${p.progress||0}% concluído · ${S.tasks.filter(t=>t.projectId===p.id&&t.status==='done').length}/${S.tasks.filter(t=>t.projectId===p.id).length} tarefas</div>
         ${frentes.map(fr=>`<div style="font-size:11px;margin-bottom:4px;font-weight:600;">${FRENTE_ICONS[fr.type]||'📁'} ${fr.name}</div>`).join('')}
-        ${items.map(ci=>`<div style="font-size:11px;padding:3px 0;${ci.done?'color:var(--text3);text-decoration:line-through;':'color:var(--text);}"><span style="color:${ci.done?'var(--green)':'var(--border2)'};">${ci.done?'✓':'○'}</span> ${ci.label}</div>`).join('')}
+        ${items.map(ci=>`<div style="font-size:11px;padding:3px 0;" ><span style="color:${ci.done?'var(--green)':'var(--text3)'};"> ${ci.done?'✓':'○'} </span> <span style="${ci.done?'text-decoration:line-through;color:var(--text3);':''}"> ${ci.label}</span></div>`).join('')}
       </div>
     </div>`;}).join('')}`;
   }
@@ -912,7 +912,7 @@ function rp(){
       </div>`:''}
       ${myRatings.map(r=>{const stars=Math.round(r.score/20);return`<div style="background:var(--bg2);border:0.5px solid var(--border);border-radius:12px;padding:13px 15px;margin-bottom:9px;">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:7px;">
-          <div style="font-size:14px;">{'⭐'.repeat(stars)}</div>
+          <div style="font-size:14px;">${'⭐'.repeat(stars)}</div>
           <div style="font-size:11px;color:var(--text3);">${ft(r.createdAt)}</div>
         </div>
         ${r.positive?`<div style="font-size:12px;color:var(--greenD);margin-bottom:4px;">✅ ${r.positive}</div>`:''}
