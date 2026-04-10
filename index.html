@@ -1163,12 +1163,27 @@ function exportLeads() {
 
 // ══ CHAT ══
 function fillMsg(t){const i=document.getElementById('minput');i.value=t;i.focus();}
-function sendMsg(){
+async function sendMsg(){
   const i=document.getElementById('minput'),t=i.value.trim();if(!t)return;
   const msgs=document.getElementById('msgs');
   const now=new Date();
   msgs.innerHTML+=`<div class="msg out"><div class="bubble">${t}</div><div class="msg-time">${now.getHours()}:${String(now.getMinutes()).padStart(2,'0')}</div></div>`;
   i.value='';msgs.scrollTop=msgs.scrollHeight;
+  if(selectedLeadId){
+    const l=leads.find(x=>x.id===selectedLeadId);
+    if(l&&l.phone){
+      try{
+        const r=await fetch(`${ZAPI_BASE}/send-text`,{
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({phone:l.phone.replace(/\D/g,''),message:t})
+        });
+        const d=await r.json();
+        if(d.zaapId||d.messageId){showToast('Enviado via WhatsApp ✓','success');}
+        else{showToast('Verifique conexão WhatsApp');}
+      }catch(e){showToast('Erro ao enviar WhatsApp');}
+    }
+  }
 }
 function handleKey(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendMsg();}}
 
@@ -1196,27 +1211,52 @@ function testMetaConnection() {
 function startMetaConnect() { document.getElementById('meta-token').focus(); document.getElementById('meta-token').scrollIntoView({behavior:'smooth'}); }
 function syncMetaAds() { showToast('Sincronizando com Meta Ads...'); setTimeout(()=>showToast('Dados atualizados!','success'),1500); }
 
+// ══ Z-API CONFIG ══
+const ZAPI_INSTANCE = '3F175227986FF1742E6F0E5C90DD1B0B';
+const ZAPI_TOKEN = 'A2C2F9C348912FFE81800899';
+const ZAPI_BASE = `https://api.z-api.io/instances/${ZAPI_INSTANCE}/token/${ZAPI_TOKEN}`;
+
 // ══ WHATSAPP ══
 function saveWppConfig() {
-  const cfg = {
-    url: document.getElementById('wpp-url').value,
-    key: document.getElementById('wpp-key').value,
-    instance: document.getElementById('wpp-instance').value,
-  };
-  if(!cfg.url||!cfg.key){showToast('Preencha URL e API Key');return;}
-  localStorage.setItem(WPP_CONFIG_KEY, JSON.stringify(cfg));
-  showToast('Configuração salva! Gerando QR Code...','success');
-  setTimeout(()=>connectWhatsApp(),500);
+  showToast('Z-API já configurada e conectada!','success');
+  checkWppStatus();
+}
+
+async function checkWppStatus() {
+  try {
+    const r = await fetch(`${ZAPI_BASE}/status`);
+    const data = await r.json();
+    if(data.connected) {
+      document.getElementById('wpp-dot').className = 'wpp-status online';
+      document.getElementById('wpp-qr-lbl').textContent = '✅ Conectado!';
+      document.getElementById('wpp-disconnect-btn').style.display = '';
+      showToast('WhatsApp conectado!','success');
+    } else {
+      document.getElementById('wpp-dot').className = 'wpp-status offline';
+      document.getElementById('wpp-qr-lbl').textContent = 'Desconectado\nReconecte no Z-API';
+    }
+  } catch(e) {
+    console.log('Status check failed:', e);
+  }
+}
+
+async function sendWppMessage(phone, message) {
+  try {
+    const r = await fetch(`${ZAPI_BASE}/send-text`, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({phone: phone.replace(/\D/g,''), message})
+    });
+    const data = await r.json();
+    return data;
+  } catch(e) {
+    console.log('Send failed:', e);
+  }
 }
 
 function connectWhatsApp() {
-  const cfg = JSON.parse(localStorage.getItem(WPP_CONFIG_KEY)||'{}');
-  if(!cfg.url){showToast('Configure a Evolution API primeiro');return;}
-  document.getElementById('wpp-qr-lbl').textContent = 'Aguardando QR Code\nda Evolution API...';
-  showToast('Configure a VPS para gerar o QR Code real');
-  // Quando a API estiver rodando:
-  // fetch(`${cfg.url}/instance/connect/${cfg.instance}`, {headers:{'apikey':cfg.key}})
-  //   .then(r=>r.json()).then(data=>renderQR(data.qrcode))
+  checkWppStatus();
+  showToast('Verificando conexão Z-API...');
 }
 
 function disconnectWhatsApp() {
@@ -1283,6 +1323,8 @@ function showToast(msg,type=''){
   if(wppCfg.url){document.getElementById('wpp-url').value=wppCfg.url;}
   if(wppCfg.key){document.getElementById('wpp-key').value=wppCfg.key;}
   renderAll();
+  // Verificar status WhatsApp Z-API
+  setTimeout(checkWppStatus, 1500);
 })();
 </script>
 </body>
