@@ -26,56 +26,115 @@ async function salvarNoFirestore(colecao, dados) {
   return response.json();
 }
 
+function extrairMensagem(body) {
+  // Detecta se é mensagem enviada por mim ou recebida
+  const fromMe = body?.fromMe || body?.isFromMe || false;
+  
+  const phone =
+    body?.phone ||
+    body?.from ||
+    body?.data?.phone ||
+    body?.data?.from ||
+    "desconhecido";
+
+  const nome =
+    body?.name ||
+    body?.data?.name ||
+    body?.pushName ||
+    body?.data?.pushName ||
+    phone;
+
+  const timestamp = body?.momment
+    ? new Date(body.momment).toISOString()
+    : new Date().toISOString();
+
+  // Tipo e conteúdo da mensagem
+  let tipo = "texto";
+  let texto = "";
+  let mediaUrl = "";
+  let mediaType = "";
+  let caption = "";
+
+  // Texto simples
+  if (body?.text?.message) {
+    texto = body.text.message;
+    tipo = "texto";
+  } else if (body?.message) {
+    texto = body.message;
+    tipo = "texto";
+  }
+
+  // Imagem
+  if (body?.image || body?.data?.image) {
+    const img = body.image || body.data?.image;
+    tipo = "imagem";
+    mediaUrl = img?.url || img?.imageUrl || img?.link || "";
+    caption = img?.caption || img?.message || "";
+    texto = caption || "📷 Imagem";
+    mediaType = "image";
+  }
+
+  // Áudio / PTT
+  if (body?.audio || body?.data?.audio || body?.ptt || body?.data?.ptt) {
+    const aud = body.audio || body.data?.audio || body.ptt || body.data?.ptt;
+    tipo = "audio";
+    mediaUrl = aud?.url || aud?.audioUrl || aud?.link || "";
+    texto = "🎤 Áudio";
+    mediaType = "audio";
+  }
+
+  // Vídeo
+  if (body?.video || body?.data?.video) {
+    const vid = body.video || body.data?.video;
+    tipo = "video";
+    mediaUrl = vid?.url || vid?.videoUrl || vid?.link || "";
+    caption = vid?.caption || "";
+    texto = caption || "🎥 Vídeo";
+    mediaType = "video";
+  }
+
+  // Documento / arquivo
+  if (body?.document || body?.data?.document) {
+    const doc = body.document || body.data?.document;
+    tipo = "documento";
+    mediaUrl = doc?.url || doc?.documentUrl || doc?.link || "";
+    texto = doc?.fileName || doc?.title || "📄 Documento";
+    mediaType = "document";
+  }
+
+  // Sticker
+  if (body?.sticker || body?.data?.sticker) {
+    tipo = "sticker";
+    texto = "😊 Sticker";
+  }
+
+  // Localização
+  if (body?.location || body?.data?.location) {
+    const loc = body.location || body.data?.location;
+    tipo = "localizacao";
+    texto = `📍 Localização: ${loc?.latitude || ""}, ${loc?.longitude || ""}`;
+  }
+
+  // Contato
+  if (body?.contact || body?.data?.contact) {
+    tipo = "contato";
+    texto = "👤 Contato compartilhado";
+  }
+
+  return {
+    phone: String(phone),
+    nome: String(nome),
+    texto: String(texto),
+    tipo,
+    mediaUrl: String(mediaUrl),
+    mediaType: String(mediaType),
+    caption: String(caption),
+    fromMe: String(fromMe),
+    timestamp,
+    origem: "whatsapp",
+    lida: "false",
+  };
+}
+
 app.post("/webhook", async (req, res) => {
   try {
-    const body = req.body;
-    console.log("Webhook recebido:", JSON.stringify(body, null, 2));
-
-    const phone =
-      body?.phone ||
-      body?.from ||
-      body?.data?.phone ||
-      body?.data?.from ||
-      "desconhecido";
-
-    const texto =
-      body?.text?.message ||
-      body?.message ||
-      body?.data?.text?.message ||
-      body?.data?.message ||
-      "";
-
-    const nome =
-      body?.name ||
-      body?.data?.name ||
-      body?.pushName ||
-      body?.data?.pushName ||
-      phone;
-
-    const timestamp = new Date().toISOString();
-
-    const resultado = await salvarNoFirestore("conversas", {
-      phone,
-      nome,
-      texto,
-      timestamp,
-      origem: "whatsapp",
-      lida: "false",
-    });
-
-    console.log("Salvo no Firestore:", resultado?.name || "ok");
-    res.status(200).json({ status: "ok", saved: true });
-  } catch (err) {
-    console.error("Erro no webhook:", err);
-    res.status(500).json({ status: "erro", message: err.message });
-  }
-});
-
-app.get("/", (req, res) => {
-  res.json({ status: "online", servico: "Club Casa Prime Webhook" });
-});
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log("Webhook rodando na porta " + PORT);
-});
