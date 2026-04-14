@@ -5,6 +5,14 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Club Casa Prime · CRM</title>
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;500;600;700;800&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script type="module">
+import{initializeApp}from"https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+import{getFirestore,collection,addDoc,onSnapshot,query,orderBy,doc,setDoc}from"https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+const app=initializeApp({apiKey:"AIzaSyDJu40V2UJuOKrvGu_GxukbY812c35xSW0",authDomain:"club-casa-prime.firebaseapp.com",projectId:"club-casa-prime",storageBucket:"club-casa-prime.firebasestorage.app",messagingSenderId:"828035246763",appId:"1:828035246763:web:d0443d64be2962c09665ee"});
+window._db=getFirestore(app);
+window._fs={collection,addDoc,onSnapshot,query,orderBy,doc,setDoc};
+document.dispatchEvent(new Event("firebase-ready"));
+</script>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
 :root{
@@ -1326,6 +1334,91 @@ function showToast(msg,type=''){
   // Verificar status WhatsApp Z-API
   setTimeout(checkWppStatus, 1500);
 })();
+
+// ══ FIREBASE FIRESTORE — CONVERSAS EM TEMPO REAL ══
+let unsubChat = null;
+
+async function loadFirebaseChat(leadId) {
+  if(unsubChat){unsubChat();unsubChat=null;}
+  const msgs=document.getElementById('msgs');
+  if(!window._db){msgs.innerHTML='<div class="day-sep">Hoje</div>';return;}
+  msgs.innerHTML='<div style="text-align:center;padding:20px;color:var(--text3);font-size:12px;">Carregando...</div>';
+  try {
+    const {collection,query,orderBy,onSnapshot}=window._fs;
+    const q=query(collection(window._db,'conversas',leadId,'mensagens'),orderBy('ts','asc'));
+    unsubChat=onSnapshot(q,(snap)=>{
+      if(snap.empty){msgs.innerHTML='<div class="day-sep">Início da conversa</div>';}
+      else{
+        msgs.innerHTML='<div class="day-sep">Hoje</div>';
+        snap.forEach(d=>{
+          const m=d.data();
+          const dir=m.dir==='out'?'out':'in';
+          const t=m.ts?new Date(m.ts).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}):'';
+          msgs.innerHTML+=`<div class="msg ${dir}"><div class="bubble">${m.text||''}</div><div class="msg-time">${t}</div></div>`;
+        });
+      }
+      msgs.scrollTop=msgs.scrollHeight;
+    });
+  } catch(e){console.log('Firestore error:',e);}
+}
+
+async function fsAddMsg(leadId,text,dir){
+  if(!window._db)return;
+  try{
+    const {collection,addDoc}=window._fs;
+    await addDoc(collection(window._db,'conversas',leadId,'mensagens'),{text,dir,ts:Date.now(),leadId});
+  }catch(e){console.log('Firestore write error:',e);}
+}
+
+// Sobrescrever selectConv para usar Firestore
+const _origSelect=selectConv;
+function selectConv(id){
+  selectedLeadId=id;
+  const l=leads.find(x=>x.id===id);
+  if(!l)return;
+  document.getElementById('ca').textContent=initials(l.name);
+  document.getElementById('ca').style.cssText=`background:${l.color}22;color:${l.color};`;
+  document.getElementById('cn').textContent=l.name;
+  document.getElementById('cnum').textContent=l.phone;
+  document.getElementById('lp-name').textContent=l.name;
+  document.getElementById('lp-phone').textContent=l.phone;
+  document.getElementById('lp-emp').textContent=l.emp;
+  document.getElementById('lp-int').textContent=l.interest;
+  document.getElementById('lp-orc').textContent=l.orc;
+  document.getElementById('lp-ori').textContent=l.ori;
+  document.getElementById('lp-note').value=l.note||'';
+  document.getElementById('lp-status').value=l.status;
+  renderConvList();
+  loadFirebaseChat(id);
+}
+
+// Sobrescrever sendMsg para salvar no Firestore e enviar pelo Z-API
+async function sendMsg(){
+  const i=document.getElementById('minput'),t=i.value.trim();
+  if(!t)return;
+  i.value='';
+  if(selectedLeadId){
+    await fsAddMsg(selectedLeadId,t,'out');
+    const l=leads.find(x=>x.id===selectedLeadId);
+    if(l&&l.phone){
+      try{
+        const r=await fetch(`${ZAPI_BASE}/send-text`,{
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({phone:l.phone.replace(/\D/g,''),message:t})
+        });
+        const d=await r.json();
+        if(d.zaapId||d.messageId||d.id)showToast('Enviado ✓','success');
+        else showToast('Salvo — verifique WhatsApp');
+      }catch(e){showToast('Salvo localmente');}
+    }
+  }
+}
+
+document.addEventListener('firebase-ready',()=>{
+  const badge=document.getElementById('firebase-badge');
+  if(badge){badge.className='firebase-badge connected';badge.innerHTML='<span class="firebase-dot"></span>Firestore';}
+});
 </script>
 </body>
 </html>
