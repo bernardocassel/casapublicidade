@@ -7,10 +7,10 @@
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;500;600;700;800&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
 <script type="module">
 import{initializeApp}from"https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
-import{getFirestore,collection,addDoc,onSnapshot,query,orderBy,doc,setDoc}from"https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+import{getFirestore,collection,addDoc,onSnapshot,query,orderBy,where,limit,doc,setDoc}from"https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
 const app=initializeApp({apiKey:"AIzaSyDJu40V2UJuOKrvGu_GxukbY812c35xSW0",authDomain:"club-casa-prime.firebaseapp.com",projectId:"club-casa-prime",storageBucket:"club-casa-prime.firebasestorage.app",messagingSenderId:"828035246763",appId:"1:828035246763:web:d0443d64be2962c09665ee"});
 window._db=getFirestore(app);
-window._fs={collection,addDoc,onSnapshot,query,orderBy,doc,setDoc};
+window._fs={collection,addDoc,onSnapshot,query,orderBy,where,limit,doc,setDoc};
 document.dispatchEvent(new Event("firebase-ready"));
 </script>
 <style>
@@ -945,32 +945,7 @@ function filterConvs(q) {
   });
 }
 
-function selectConv(id) {
-  selectedLeadId = id;
-  const l = leads.find(x=>x.id===id);
-  if(!l)return;
-  document.getElementById('ca').textContent = initials(l.name);
-  document.getElementById('ca').style.cssText = `background:${l.color}22;color:${l.color};`;
-  document.getElementById('cn').textContent = l.name;
-  document.getElementById('cnum').textContent = l.phone;
-  document.getElementById('lp-name').textContent = l.name;
-  document.getElementById('lp-phone').textContent = l.phone;
-  document.getElementById('lp-emp').textContent = l.emp;
-  document.getElementById('lp-int').textContent = l.interest;
-  document.getElementById('lp-orc').textContent = l.orc;
-  document.getElementById('lp-ori').textContent = l.ori;
-  document.getElementById('lp-note').value = l.note||'';
-  document.getElementById('lp-status').value = l.status;
-  const fn = l.name.split(' ')[0];
-  const msgs = document.getElementById('msgs');
-  msgs.innerHTML = `<div class="day-sep">Hoje</div>
-    <div class="msg in"><div class="bubble">Olá! Tenho interesse em: ${l.interest} - ${l.emp}</div><div class="msg-time">${fmtTime(l.time)}</div></div>
-    <div class="msg out"><div class="bubble">Olá ${fn}! Obrigado pelo contato. Posso te ajudar com mais informações!</div><div class="msg-time">${fmtTime(l.time)}</div></div>
-    ${l.note?`<div class="msg in"><div class="bubble">${l.note}</div><div class="msg-time">${fmtTime(l.time)}</div></div>`:''}`;
-  msgs.scrollTop = msgs.scrollHeight;
-  renderConvList();
-}
-
+// selectConv é definida abaixo na seção Firebase (versão com Firestore em tempo real)
 function updateLeadStatusFromChat() {
   if(!selectedLeadId)return;
   const l = leads.find(x=>x.id===selectedLeadId);
@@ -1171,28 +1146,7 @@ function exportLeads() {
 
 // ══ CHAT ══
 function fillMsg(t){const i=document.getElementById('minput');i.value=t;i.focus();}
-async function sendMsg(){
-  const i=document.getElementById('minput'),t=i.value.trim();if(!t)return;
-  const msgs=document.getElementById('msgs');
-  const now=new Date();
-  msgs.innerHTML+=`<div class="msg out"><div class="bubble">${t}</div><div class="msg-time">${now.getHours()}:${String(now.getMinutes()).padStart(2,'0')}</div></div>`;
-  i.value='';msgs.scrollTop=msgs.scrollHeight;
-  if(selectedLeadId){
-    const l=leads.find(x=>x.id===selectedLeadId);
-    if(l&&l.phone){
-      try{
-        const r=await fetch(`${ZAPI_BASE}/send-text`,{
-          method:'POST',
-          headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({phone:l.phone.replace(/\D/g,''),message:t})
-        });
-        const d=await r.json();
-        if(d.zaapId||d.messageId){showToast('Enviado via WhatsApp ✓','success');}
-        else{showToast('Verifique conexão WhatsApp');}
-      }catch(e){showToast('Erro ao enviar WhatsApp');}
-    }
-  }
-}
+// sendMsg é definida abaixo na seção Firebase (versão com Firestore + Z-API)
 function handleKey(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendMsg();}}
 
 // ══ META ADS ══
@@ -1335,89 +1289,221 @@ function showToast(msg,type=''){
   setTimeout(checkWppStatus, 1500);
 })();
 
-// ══ FIREBASE FIRESTORE — CONVERSAS EM TEMPO REAL ══
-let unsubChat = null;
+// ══════════════════════════════════════════════════════
+//  FIREBASE FIRESTORE — INTEGRAÇÃO WHATSAPP EM TEMPO REAL
+//  Estrutura no Firestore:
+//    conversas/{docId}  ← webhook salva aqui (campo phone, texto, timestamp, dir)
+//    conversas/{leadId}/mensagens/{msgId} ← mensagens enviadas pelo CRM
+// ══════════════════════════════════════════════════════
 
+let unsubChat = null;       // listener da conversa ativa
+let unsubInbox = null;      // listener global de novas mensagens recebidas
+
+// ── Normaliza telefone para comparação (só dígitos, sem DDI 55) ──
+function normalizePhone(p) {
+  if(!p) return '';
+  let d = p.replace(/\D/g,'');
+  if(d.startsWith('55') && d.length > 11) d = d.slice(2);
+  return d;
+}
+
+// ── Carrega mensagens da conversa de um lead específico ──
+// Combina: mensagens enviadas pelo CRM (subcoleção) + mensagens recebidas via webhook (raiz)
 async function loadFirebaseChat(leadId) {
   if(unsubChat){unsubChat();unsubChat=null;}
-  const msgs=document.getElementById('msgs');
-  if(!window._db){msgs.innerHTML='<div class="day-sep">Hoje</div>';return;}
-  msgs.innerHTML='<div style="text-align:center;padding:20px;color:var(--text3);font-size:12px;">Carregando...</div>';
+  const msgsEl = document.getElementById('msgs');
+  if(!window._db){
+    msgsEl.innerHTML = '<div class="day-sep">Firebase não conectado</div>';
+    return;
+  }
+  msgsEl.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text3);font-size:12px;">Carregando conversa...</div>';
+
+  const lead = leads.find(x=>x.id===leadId);
+  if(!lead){ msgsEl.innerHTML = '<div class="day-sep">Lead não encontrado</div>'; return; }
+  const phoneNorm = normalizePhone(lead.phone);
+
   try {
-    const {collection,query,orderBy,onSnapshot}=window._fs;
-    const q=query(collection(window._db,'conversas',leadId,'mensagens'),orderBy('ts','asc'));
-    unsubChat=onSnapshot(q,(snap)=>{
-      if(snap.empty){msgs.innerHTML='<div class="day-sep">Início da conversa</div>';}
-      else{
-        msgs.innerHTML='<div class="day-sep">Hoje</div>';
-        snap.forEach(d=>{
-          const m=d.data();
-          const dir=m.dir==='out'?'out':'in';
-          const t=m.ts?new Date(m.ts).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}):'';
-          msgs.innerHTML+=`<div class="msg ${dir}"><div class="bubble">${m.text||''}</div><div class="msg-time">${t}</div></div>`;
+    const {collection, query, orderBy, onSnapshot, where} = window._fs;
+
+    // Listener nas mensagens enviadas pelo CRM (subcoleção do lead)
+    const qOut = query(
+      collection(window._db,'conversas',leadId,'mensagens'),
+      orderBy('ts','asc')
+    );
+
+    // Listener nas mensagens recebidas via webhook (coleção raiz, filtradas por phone)
+    const qIn = query(
+      collection(window._db,'conversas'),
+      orderBy('timestamp','asc')
+    );
+
+    let msgsOut = [];
+    let msgsIn  = [];
+
+    function renderMsgs() {
+      // Combina e ordena por timestamp
+      const all = [
+        ...msgsOut.map(m=>({...m, _dir:'out'})),
+        ...msgsIn.map(m=>({...m, _dir:'in'}))
+      ].sort((a,b)=>(a._ts||0)-(b._ts||0));
+
+      if(!all.length){
+        msgsEl.innerHTML = '<div class="day-sep">Início da conversa</div>';
+      } else {
+        msgsEl.innerHTML = '<div class="day-sep">Hoje</div>';
+        all.forEach(m=>{
+          const t = m._ts ? new Date(m._ts).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}) : '';
+          msgsEl.innerHTML += `<div class="msg ${m._dir}"><div class="bubble">${m._text||''}</div><div class="msg-time">${t}</div></div>`;
         });
       }
-      msgs.scrollTop=msgs.scrollHeight;
+      msgsEl.scrollTop = msgsEl.scrollHeight;
+    }
+
+    // Escuta mensagens enviadas (subcoleção)
+    const unsubOut = onSnapshot(qOut, snap=>{
+      msgsOut = snap.docs.map(d=>{
+        const data = d.data();
+        return { _ts: data.ts, _text: data.text };
+      });
+      renderMsgs();
     });
-  } catch(e){console.log('Firestore error:',e);}
+
+    // Escuta mensagens recebidas (webhook — coleção raiz)
+    const unsubIn = onSnapshot(qIn, snap=>{
+      msgsIn = snap.docs
+        .map(d=>d.data())
+        .filter(m=>{
+          const mp = normalizePhone(m.phone || m.from || '');
+          return mp && mp === phoneNorm;
+        })
+        .map(m=>({
+          _ts: m.timestamp ? new Date(m.timestamp).getTime() : 0,
+          _text: m.texto || m.message || m.text || ''
+        }));
+      renderMsgs();
+    });
+
+    // Agrupa os dois listeners para poder cancelar juntos
+    unsubChat = ()=>{ unsubOut(); unsubIn(); };
+
+  } catch(e){
+    console.log('Firestore loadFirebaseChat error:', e);
+    msgsEl.innerHTML = '<div class="day-sep">Erro ao carregar conversa</div>';
+  }
 }
 
-async function fsAddMsg(leadId,text,dir){
-  if(!window._db)return;
+// ── Salva mensagem enviada pelo CRM na subcoleção do lead ──
+async function fsAddMsg(leadId, text, dir){
+  if(!window._db) return;
   try{
-    const {collection,addDoc}=window._fs;
-    await addDoc(collection(window._db,'conversas',leadId,'mensagens'),{text,dir,ts:Date.now(),leadId});
-  }catch(e){console.log('Firestore write error:',e);}
+    const {collection, addDoc} = window._fs;
+    await addDoc(collection(window._db,'conversas',leadId,'mensagens'), {
+      text, dir, ts: Date.now(), leadId
+    });
+  } catch(e){ console.log('Firestore write error:', e); }
 }
 
-// Sobrescrever selectConv para usar Firestore
-const _origSelect=selectConv;
+// ── Listener global: novas mensagens recebidas atualizam a lista de conversas ──
+function startInboxListener(){
+  if(!window._db || unsubInbox) return;
+  try{
+    const {collection, query, orderBy, onSnapshot, limit} = window._fs;
+    const q = query(collection(window._db,'conversas'), orderBy('timestamp','desc'), limit(50));
+    unsubInbox = onSnapshot(q, snap=>{
+      // Para cada mensagem recebida, verifica se o lead existe; se não, cria automaticamente
+      snap.docChanges().forEach(change=>{
+        if(change.type !== 'added') return;
+        const m = change.doc.data();
+        const phone = normalizePhone(m.phone || m.from || '');
+        if(!phone) return;
+        const nome = m.nome || m.pushName || m.name || phone;
+        // Verifica se já existe lead com esse telefone
+        const exists = leads.some(l=>normalizePhone(l.phone)===phone);
+        if(!exists){
+          // Cria lead automaticamente a partir da mensagem WhatsApp
+          const newLead = {
+            id: 'wpp_'+Date.now()+'_'+Math.random().toString(36).slice(2,6),
+            name: nome,
+            phone: phone,
+            emp: '—',
+            interest: '—',
+            orc: '—',
+            ori: 'WhatsApp',
+            status: 'novo',
+            val: 0,
+            note: '',
+            time: Date.now(),
+            color: COLORS[leads.length % COLORS.length],
+          };
+          leads.push(newLead);
+          saveLeads(leads);
+          showToast(`📱 Novo lead via WhatsApp: ${nome}`,'success');
+        }
+      });
+    });
+  } catch(e){ console.log('Inbox listener error:', e); }
+}
+
+// ── selectConv: versão corrigida que usa Firestore ──
+// (substitui a função original definida acima)
 function selectConv(id){
-  selectedLeadId=id;
-  const l=leads.find(x=>x.id===id);
-  if(!l)return;
-  document.getElementById('ca').textContent=initials(l.name);
-  document.getElementById('ca').style.cssText=`background:${l.color}22;color:${l.color};`;
-  document.getElementById('cn').textContent=l.name;
-  document.getElementById('cnum').textContent=l.phone;
-  document.getElementById('lp-name').textContent=l.name;
-  document.getElementById('lp-phone').textContent=l.phone;
-  document.getElementById('lp-emp').textContent=l.emp;
-  document.getElementById('lp-int').textContent=l.interest;
-  document.getElementById('lp-orc').textContent=l.orc;
-  document.getElementById('lp-ori').textContent=l.ori;
-  document.getElementById('lp-note').value=l.note||'';
-  document.getElementById('lp-status').value=l.status;
+  selectedLeadId = id;
+  const l = leads.find(x=>x.id===id);
+  if(!l) return;
+  document.getElementById('ca').textContent = initials(l.name);
+  document.getElementById('ca').style.cssText = `background:${l.color}22;color:${l.color};`;
+  document.getElementById('cn').textContent = l.name;
+  document.getElementById('cnum').textContent = l.phone;
+  document.getElementById('lp-name').textContent = l.name;
+  document.getElementById('lp-phone').textContent = l.phone;
+  document.getElementById('lp-emp').textContent = l.emp;
+  document.getElementById('lp-int').textContent = l.interest;
+  document.getElementById('lp-orc').textContent = l.orc;
+  document.getElementById('lp-ori').textContent = l.ori;
+  document.getElementById('lp-note').value = l.note||'';
+  document.getElementById('lp-status').value = l.status;
   renderConvList();
   loadFirebaseChat(id);
 }
 
-// Sobrescrever sendMsg para salvar no Firestore e enviar pelo Z-API
+// ── sendMsg: versão corrigida que salva no Firestore E envia pelo Z-API ──
+// (substitui a função original definida acima)
 async function sendMsg(){
-  const i=document.getElementById('minput'),t=i.value.trim();
-  if(!t)return;
-  i.value='';
-  if(selectedLeadId){
-    await fsAddMsg(selectedLeadId,t,'out');
-    const l=leads.find(x=>x.id===selectedLeadId);
-    if(l&&l.phone){
-      try{
-        const r=await fetch(`${ZAPI_BASE}/send-text`,{
-          method:'POST',
-          headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({phone:l.phone.replace(/\D/g,''),message:t})
-        });
-        const d=await r.json();
-        if(d.zaapId||d.messageId||d.id)showToast('Enviado ✓','success');
-        else showToast('Salvo — verifique WhatsApp');
-      }catch(e){showToast('Salvo localmente');}
+  const i = document.getElementById('minput'), t = i.value.trim();
+  if(!t) return;
+  i.value = '';
+  if(!selectedLeadId){ showToast('Selecione um lead primeiro'); return; }
+
+  // Salva no Firestore imediatamente (feedback visual instantâneo)
+  await fsAddMsg(selectedLeadId, t, 'out');
+
+  // Envia pelo Z-API
+  const l = leads.find(x=>x.id===selectedLeadId);
+  if(l && l.phone){
+    try{
+      const phone = normalizePhone(l.phone);
+      const r = await fetch(`${ZAPI_BASE}/send-text`,{
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({phone, message: t})
+      });
+      const d = await r.json();
+      if(d.zaapId || d.messageId || d.id) showToast('Enviado via WhatsApp ✓','success');
+      else showToast('Mensagem salva — verifique conexão WhatsApp');
+    } catch(e){
+      showToast('Mensagem salva localmente');
+      console.log('Z-API send error:', e);
     }
   }
 }
 
-document.addEventListener('firebase-ready',()=>{
-  const badge=document.getElementById('firebase-badge');
-  if(badge){badge.className='firebase-badge connected';badge.innerHTML='<span class="firebase-dot"></span>Firestore';}
+// ── Inicializar listeners quando Firebase estiver pronto ──
+document.addEventListener('firebase-ready', ()=>{
+  // Atualiza badge
+  const badge = document.getElementById('firebase-badge');
+  if(badge){ badge.className='firebase-badge connected'; badge.innerHTML='<span class="firebase-dot"></span>Firestore'; }
+  // Inicia listener global de inbox (novas mensagens WhatsApp)
+  startInboxListener();
 });
 </script>
 </body>
